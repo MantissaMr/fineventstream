@@ -116,8 +116,6 @@ def process_quote_data(quote_data_raw, symbol_ticker):
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Main execution: Starting Stock Quotes Producer...") # Now uses the main logger
-    # The SYMBOLS_TO_TRACK and API key checks are already done above, so we can be confident here.
-
     num_symbols = len(config.SYMBOLS_TO_TRACK) # num_symbols will be > 0 due to earlier checks
     
     MIN_INTER_SYMBOL_SLEEP_SECONDS = 2
