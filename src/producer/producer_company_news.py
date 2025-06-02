@@ -54,7 +54,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__) # Main logger for this module
 
 # --- State Management for last seen news ID per symbol (in-memory) ---
-# NOTE: This state is lost if the script restarts. For robust production, persist this externally.
+# NOTE: This state is lost if the script restarts. For robust production, we'll persist this externally.
 last_seen_news_ids = {} # Example: {"AAPL": 12345, "MSFT": 67890}
 
 # --- Helper Functions ---
