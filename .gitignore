@@ -199,3 +199,10 @@ Desktop.ini
 
 # Atom
 .atom/
+
+# Terraform
+# Terraform
+terraform/.terraform/  # Ignore the terraform plugins directory within your terraform folder
+*.tfstate
+*.tfstate.*
+# .terraform.lock.hcl SHOULD NOT be ignored, it should be committed. 
