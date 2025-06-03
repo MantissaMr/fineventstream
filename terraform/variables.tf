@@ -30,3 +30,10 @@ variable "company_news_stream_name" {
   type        = string
   default     = "fineventstream-company-news"
 }
+
+# Variables for S3 bucket names
+variable "s3_bucket_name_prefix" {
+  description = "Prefix for the S3 data lake bucket name. A random suffix will be added."
+  type        = string
+  default     = "fineventstream-data"
+}
