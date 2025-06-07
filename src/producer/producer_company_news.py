@@ -7,11 +7,11 @@ import json
 import time
 import logging
 import datetime
+import boto3
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 # --- Early Config Import & Validation ---
-# This section attempts to load essential configuration early.
-# If it fails, the script will log a critical error and exit.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s") # Basic for immediate use
 temp_logger = logging.getLogger("company_news_config_setup") 
 
@@ -19,33 +19,32 @@ try:
     from src import config
     temp_logger.info("Successfully imported configuration from src.config.")
     # Essential config checks
-    if not hasattr(config, 'SYMBOLS_TO_TRACK') or not config.SYMBOLS_TO_TRACK:
-        temp_logger.critical("Config error: SYMBOLS_TO_TRACK is missing or empty in src.config.py. Exiting.")
+    if not all(hasattr(config, attr) for attr in ['SYMBOLS_TO_TRACK', 'FINNHUB_API_BASE_URL']):
+        temp_logger.critical("Config error: Essential variables missing in src.config.py. Exiting.")
         exit(1)
-    if not hasattr(config, 'FINNHUB_API_BASE_URL') or not config.FINNHUB_API_BASE_URL:
-        temp_logger.critical("Config error: FINNHUB_API_BASE_URL is missing or empty in src.config.py. Exiting.")
-        exit(1)
-    temp_logger.info(f"Configuration loaded. Tracking symbols: {config.SYMBOLS_TO_TRACK}")
 
 except ImportError as e:
-    temp_logger.critical(f"Failed to import 'config' from 'src': {e}. Ensure PYTHONPATH is set to project root. Exiting.")
+    temp_logger.critical(f"Failed to import 'config' from 'src': {e}. Ensure PYTHONPATH is set. Exiting.")
     exit(1)
 except Exception as e: # Catch any other unexpected error during config access
     temp_logger.critical(f"An unexpected error occurred during configuration loading: {e}. Exiting.")
     exit(1)
 
-# --- Main Script Configuration (using loaded config) ---
+# --- Main Script Configuration ---
 load_dotenv() 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
-if not FINNHUB_API_KEY:
-    temp_logger.critical("FINNHUB_API_KEY not found in .env file or environment. Exiting.")
+KINESIS_STREAM_NAME = os.getenv("KINESIS_STREAM_NAME_NEWS") # Specific env var for this stream
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "af-south-1")
+
+if not all([FINNHUB_API_KEY, KINESIS_STREAM_NAME]):
+    temp_logger.critical("Critical environment variables FINNHUB_API_KEY or KINESIS_STREAM_NAME_NEWS are not set. Exiting.")
     exit(1)
 
 FINNHUB_NEWS_URL = f"{config.FINNHUB_API_BASE_URL}/company-news"
 POLLING_INTERVAL_SECONDS = 60 * 15  # Poll news every 15 minutes
 NEWS_LOOKBACK_DAYS = 2 # How many days back to check for news to catch up/avoid missing items.
 
-# --- Main Logging Setup (Overrides the basicConfig for temp_logger for subsequent logs) ---
+# --- Main Logging Setup  ---
 logging.basicConfig(
     level=logging.INFO, # Set to DEBUG for more verbose API call/response details
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -59,19 +58,7 @@ last_seen_news_ids = {} # Example: {"AAPL": 12345, "MSFT": 67890}
 
 # --- Helper Functions ---
 def fetch_company_news(api_key, symbol, from_date_str, to_date_str):
-    """
-    Fetches company news for a given symbol and date range from Finnhub.
-
-    Args:
-        api_key (str): The Finnhub API key.
-        symbol (str): The stock symbol (e.g., "AAPL").
-        from_date_str (str): Start date in "YYYY-MM-DD" format.
-        to_date_str (str): End date in "YYYY-MM-DD" format.
-
-    Returns:
-        list or None: A list of news article dictionaries if successful, 
-                      empty list if no news, or None if an error occurs.
-    """
+    """Fetches company news for a given symbol and date range from Finnhub."""
     if not api_key:
         logger.error(f"Finnhub API key is not set for fetching news for {symbol}.")
         return None
@@ -84,7 +71,7 @@ def fetch_company_news(api_key, symbol, from_date_str, to_date_str):
     }
     try:
         logger.debug(f"Fetching news for {symbol} from {from_date_str} to {to_date_str} with params: {params}")
-        response = requests.get(FINNHUB_NEWS_URL, params=params, timeout=20) # Increased timeout for news
+        response = requests.get(FINNHUB_NEWS_URL, params=params, timeout=20) 
         response.raise_for_status()
         news_data_list = response.json() 
         if isinstance(news_data_list, list):
@@ -107,16 +94,7 @@ def fetch_company_news(api_key, symbol, from_date_str, to_date_str):
 
 
 def process_news_data(news_articles_raw, symbol_ticker):
-    """
-    Processes raw news articles: filters by last_seen_id, selects fields, adds timestamps.
-
-    Args:
-        news_articles_raw (list or None): List of raw news article dicts from API, or None if fetch failed.
-        symbol_ticker (str): The stock symbol for this batch of news.
-
-    Returns:
-        list: A list of processed news article dictionaries that are new since last poll.
-    """
+    """Processes raw news articles: filters by last_seen_id, selects fields, adds timestamps."""
     if news_articles_raw is None: # Fetch failed
         return []
     if not isinstance(news_articles_raw, list):
@@ -146,16 +124,14 @@ def process_news_data(news_articles_raw, symbol_ticker):
 
     for article_raw in sorted_articles:
         if not isinstance(article_raw, dict):
-            logger.warning(f"Skipping non-dictionary item in news list for {symbol_ticker}: {str(article_raw)[:100]}")
-            continue
-
+            continue # Skip any non-dict entries (shouldn't happen, but just in case)
         article_id = article_raw.get("id")
         if not isinstance(article_id, int):
-            logger.warning(f"Article for {symbol_ticker} (Headline: '{str(article_raw.get('headline'))[:50]}...') has missing or invalid ID type ('{article_id}'). Skipping ID-based de-duplication for this article; it might be processed if new based on content, but ID tracking unreliable.")
+            logger.warning(f"Article for {symbol_ticker} (Headline: '{str(article_raw.get('headline'))[:50]}...') has missing or invalid ID type ('{article_id}'). Skipping ID-based de-duplication for this article")
             # We will still process this article if it's otherwise valid, but won't use its ID to update last_seen_news_ids
             # Or, stricter: if article_id is None: logger.warning(...); continue # to skip it entirely
         elif article_id <= last_seen_news_ids.get(symbol_ticker, 0): # Compare against the global last_seen for this symbol
-            logger.debug(f"Skipping already seen news ID {article_id} for {symbol_ticker}. Headline: {str(article_raw.get('headline'))[:50]}...")
+            logger.debug(f"Skipping article for {symbol_ticker} with ID {article_id} as it is not newer than last seen ID {last_seen_news_ids.get(symbol_ticker, 'N/A')}.")
             continue 
         
         # If we reach here, the article is new (or has an invalid ID we're processing anyway)
@@ -201,10 +177,30 @@ def process_news_data(news_articles_raw, symbol_ticker):
 
     return processed_new_articles
 
+def send_to_kinesis(kinesis_client, stream_name, data_record):
+    """Sends a single data record to the specified Kinesis Data Stream"""
+    try:
+        partition_key = data_record['symbol']
+        data_bytes = json.dumps(data_record).encode('utf-8')
+
+        response = kinesis_client.put_record(
+            StreamName=stream_name,
+            Data=data_bytes,
+            PartitionKey=partition_key
+        )
+        logger.debug(f"Successfully sent record to Kinesis. ShardId: {response.get('ShardId')}, SequenceNumber: {response.get('SequenceNumber')}")
+        return True
+    except ClientError as e:
+        logger.error(f"Failed to send record to Kinesis stream {stream_name}. Error: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred when sending to Kinesis: {e}")
+    return False
+
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Starting Company News Producer...")
-    # SYMBOLS_TO_TRACK and API_KEY are validated in the initial config block
+    
+    kinesis_client = boto3.client("kinesis", region_name=AWS_REGION) # Initialize Kinesis client
 
     num_symbols = len(config.SYMBOLS_TO_TRACK)
     MIN_INTER_SYMBOL_SLEEP_SECONDS = 5 # News requests can be heavier; allow more time
@@ -231,7 +227,9 @@ if __name__ == "__main__":
                     if final_news_messages:
                         total_new_articles_in_cycle += len(final_news_messages)
                         for news_message in final_news_messages:
-                            print(json.dumps(news_message, indent=2)) 
+                            success = send_to_kinesis(kinesis_client, KINESIS_STREAM_NAME, news_message)
+                            if not success:
+                                logger.error(f"Failed to send news article (ID: {news_message.get('news_id')}) for {stock_symbol_iter} to Kinesis.")
                 else:
                     logger.warning(f"Fetch attempt for {stock_symbol_iter} news failed or returned None.")
                 

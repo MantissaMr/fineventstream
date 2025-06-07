@@ -1,62 +1,58 @@
 # src/producer/producer_stock_quotes.py
-# Producer for fetching stock quotes from Finnhub API
+# Producer for fetching stock quotes from Finnhub API and sending to the appropriate Kinesis stream.
 
 import os
 import requests
 import json
 import time
-import logging # Keep logging import at the top
+import logging
 import datetime
+import boto3
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 # --- Early Config Import & Validation ---
-# This section attempts to load essential configuration early.
-# If it fails, the script should not proceed.
-
-# A basic temporary logger for initial setup messages.. this will be replaced later by the main logger,
-# but ensures we can log critical errors if config import fails.
+# # Configure a temporary logger for bootstrap phase; will be reconfigured later
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-temp_logger = logging.getLogger("config_setup") # A distinct name for this initial logger
+temp_logger = logging.getLogger("config_setup")
 
 try:
     from src import config
     temp_logger.info(f"Successfully imported configuration from src.config.")
     # Perform essential config checks immediately
-    if not hasattr(config, 'SYMBOLS_TO_TRACK') or not config.SYMBOLS_TO_TRACK:
-        temp_logger.critical("Config error: SYMBOLS_TO_TRACK is not defined or empty in src.config.py. Exiting.")
+    if not all(hasattr(config, attr) for attr in ['SYMBOLS_TO_TRACK', 'FINNHUB_API_BASE_URL']):
+        temp_logger.critical("Config error: Essential variables missing in src.config.py. Exiting.")
         exit(1)
-    if not hasattr(config, 'FINNHUB_API_BASE_URL') or not config.FINNHUB_API_BASE_URL:
-        temp_logger.critical("Config error: FINNHUB_API_BASE_URL is not defined or empty in src.config.py. Exiting.")
-        exit(1)
-    temp_logger.info(f"Configuration loaded. Tracking symbols: {config.SYMBOLS_TO_TRACK}")
 
 except ImportError as e:
-    temp_logger.critical(f"Failed to import 'config' from 'src': {e}. Ensure PYTHONPATH is set correctly to include the project root. Exiting.")
+    temp_logger.critical(f"Failed to import 'config' from 'src': {e}. Ensure PYTHONPATH is set. Exiting.")
     exit(1)
 except Exception as e: # Catch any other unexpected error during config access
     temp_logger.critical(f"An unexpected error occurred during configuration loading: {e}. Exiting.")
     exit(1)
 
 # --- Main Script Configuration (using loaded config) ---
-load_dotenv() # Load .env file from project root
+load_dotenv() 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
-if not FINNHUB_API_KEY: # Check for API key immediately after trying to load it
-    temp_logger.critical("FINNHUB_API_KEY not found in .env file or environment. Exiting.")
+KINESIS_STREAM_NAME = os.getenv("KINESIS_STREAM_NAME_QUOTES") # Will be set in the EC2 environment
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "af-south-1") # af-south-1 being the default region for this 
+
+if not all([FINNHUB_API_KEY, KINESIS_STREAM_NAME]):
+    temp_logger.critical("Critical environment variables FINNHUB_API_KEY or KINESIS_STREAM_NAME_QUOTES are not set. Exiting.")
     exit(1)
 
 FINNHUB_QUOTE_URL = f"{config.FINNHUB_API_BASE_URL}/quote"
 POLLING_INTERVAL_SECONDS = 60 * 1
 
-# --- Main Logging Setup (Overrides the basicConfig used by temp_logger) ---
+# --- Main Logging Setup  ---
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", # %(name)s for module-specific logger
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", 
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-# Get a logger specific to this module (e.g., 'src.producer.producer_stock_quotes')
 logger = logging.getLogger(__name__) # This is the logger for the rest of the script.
 
-# --- Helper Functions (fetch_stock_quote, process_quote_data, possibly more in the future) ---
+# --- Helper Functions ---
 def fetch_stock_quote(api_key, symbol):
     if not api_key:
         logger.error(f"Finnhub API key is not set for fetching {symbol}.")
@@ -85,6 +81,7 @@ def fetch_stock_quote(api_key, symbol):
     return None
 
 def process_quote_data(quote_data_raw, symbol_ticker):
+    """Processes raw quote data into a structured format.""" 
     if not quote_data_raw:
         return None
     
@@ -113,11 +110,46 @@ def process_quote_data(quote_data_raw, symbol_ticker):
     }
     return processed_quote
 
+def send_to_kinesis(kinesis_client, stream_name, data_record):
+    """
+    Sends a single data record to the specified Kinesis Data Stream.
+
+    Args:
+        kinesis_client: An initialized boto3 Kinesis client.
+        stream_name (str): The name of the target Kinesis stream.
+        data_record (dict): The Python dictionary to send.
+
+    Returns:
+        bool: True if sending was successful, False otherwise.
+    """
+    try:
+        # The partition key is used by Kinesis to group data into shards.
+        # Using the stock symbol is a good practice to ensure all data for a
+        # given symbol goes to the same shard, preserving order.
+        partition_key = data_record['symbol']
+        
+        # Kinesis requires the data to be a bytes string.
+        data_bytes = json.dumps(data_record).encode('utf-8')
+
+        response = kinesis_client.put_record(
+            StreamName=stream_name,
+            Data=data_bytes,
+            PartitionKey=partition_key
+        )
+        logger.debug(f"Successfully sent record to Kinesis. ShardId: {response.get('ShardId')}, SequenceNumber: {response.get('SequenceNumber')}")
+        return True
+    except ClientError as e:
+        logger.error(f"Failed to send record to Kinesis stream {stream_name}. Error: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred when sending to Kinesis: {e}")
+    return False
+
 # --- Main Execution ---
 if __name__ == "__main__":
-    logger.info("Main execution: Starting Stock Quotes Producer...") # Now uses the main logger
-    num_symbols = len(config.SYMBOLS_TO_TRACK) # num_symbols will be > 0 due to earlier checks
+    logger.info(f"Starting Stock Quotes Producer for stream: {KINESIS_STREAM_NAME}") 
+    kinesis_client = boto3.client("kinesis", region_name=AWS_REGION) # Initialize the boto3 client once.
     
+    num_symbols = len(config.SYMBOLS_TO_TRACK)
     MIN_INTER_SYMBOL_SLEEP_SECONDS = 2
 
     try:
@@ -132,7 +164,11 @@ if __name__ == "__main__":
                 if raw_quote_data:
                     final_quote_message = process_quote_data(raw_quote_data, stock_symbol_iter)
                     if final_quote_message:
-                        print(json.dumps(final_quote_message, indent=2)) 
+                        success = send_to_kinesis(kinesis_client, KINESIS_STREAM_NAME, final_quote_message)
+                        if success:
+                            logger.info(f"Successfully sent quote for {stock_symbol_iter} to Kinesis.")
+                        else:
+                            logger.error(f"Failed to send quote for {stock_symbol_iter} to Kinesis.") 
                     else:
                         logger.warning(f"Could not process quote data for {stock_symbol_iter} after fetching.")
                 else:
@@ -141,7 +177,8 @@ if __name__ == "__main__":
                 if i < num_symbols - 1: 
                     logger.debug(f"Pausing for {MIN_INTER_SYMBOL_SLEEP_SECONDS}s before next symbol.")
                     time.sleep(MIN_INTER_SYMBOL_SLEEP_SECONDS) 
-
+            
+            # Heartbeat and sleep logic
             cycle_duration_seconds = time.time() - cycle_start_time
             logger.info(f"--- Polling cycle for all symbols took {cycle_duration_seconds:.2f} seconds. ---")
 

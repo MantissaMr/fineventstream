@@ -28,7 +28,10 @@ echo "INFO: Python dependencies installed."
 
 # Set API key from Terraform template variable and export for the producer process
 export FINNHUB_API_KEY="${finnhub_api_key}"
-echo "INFO: FINNHUB_API_KEY environment variable configured."
+export KINESIS_STREAM_NAME_QUOTES="${kinesis_stream_name_quotes}"
+export KINESIS_STREAM_NAME_NEWS="${kinesis_stream_name_news}"
+export AWS_DEFAULT_REGION="${aws_region}" # Boto3 can use this automatically
+echo "INFO: Environment variables configured"
 
 # Launch the specified producer script in the background using nohup
 PRODUCER_SCRIPT_PATH="src/producer/${script_to_run}"

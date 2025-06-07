@@ -45,18 +45,17 @@ resource "aws_instance" "stock_quotes_producer" {
   ami           = data.aws_ami.amazon_linux_2.id
   instance_type = var.ec2_instance_type
   key_name      = var.ec2_key_pair_name
-
-  # Attach the IAM role via the instance profile created in iam.tf
-  iam_instance_profile = aws_iam_instance_profile.ec2_producer_instance_profile.name
-
-  # Attach the security group
-  vpc_security_group_ids = [aws_security_group.producer_sg.id]
+  iam_instance_profile = aws_iam_instance_profile.ec2_producer_instance_profile.name # Attach the IAM role via the instance profile created in iam.tf
+  vpc_security_group_ids = [aws_security_group.producer_sg.id] # Attach the security group
 
   # Render the user data template with variables specific to this producer
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
     github_repo_url  = var.github_repo_url
     script_to_run    = "producer_stock_quotes.py"
     finnhub_api_key  = var.finnhub_api_key
+    kinesis_stream_name_quotes = var.stock_quotes_stream_name
+    kinesis_stream_name_news   = var.company_news_stream_name
+    aws_region                 = var.aws_region
   })
 
   # Override the default tag for 'Name' to easily identify the instance
@@ -70,7 +69,6 @@ resource "aws_instance" "company_news_producer" {
   ami           = data.aws_ami.amazon_linux_2.id
   instance_type = var.ec2_instance_type
   key_name      = var.ec2_key_pair_name
-
   iam_instance_profile = aws_iam_instance_profile.ec2_producer_instance_profile.name
   vpc_security_group_ids = [aws_security_group.producer_sg.id]
 
@@ -79,6 +77,9 @@ resource "aws_instance" "company_news_producer" {
     github_repo_url  = var.github_repo_url
     script_to_run    = "producer_company_news.py"
     finnhub_api_key  = var.finnhub_api_key
+    kinesis_stream_name_quotes = var.stock_quotes_stream_name
+    kinesis_stream_name_news   = var.company_news_stream_name
+    aws_region                 = var.aws_region
   })
 
   tags = {
