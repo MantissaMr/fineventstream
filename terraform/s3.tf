@@ -8,6 +8,7 @@ resource "random_id" "bucket_suffix" {
 # S3 Bucket for storing processed data (our data lake)
 resource "aws_s3_bucket" "data_lake_bucket" {
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}"
+  force_destroy = true # Allows deletion of non-empty bucket
   tags = {
     Purpose = "Data Lake for FinEventStream"
   }
