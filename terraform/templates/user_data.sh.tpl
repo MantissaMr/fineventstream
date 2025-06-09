@@ -38,6 +38,13 @@ PRODUCER_SCRIPT_PATH="src/producer/${script_to_run}"
 LOG_FILE="/home/ec2-user/app/producer.log"
 echo "INFO: Launching producer: ${script_to_run}. Log file will be at: $LOG_FILE"
 COMMAND_TO_RUN="export PYTHONPATH=\$PYTHONPATH:$APP_DIR; export FINNHUB_API_KEY='${finnhub_api_key}'; nohup python3 $PRODUCER_SCRIPT_PATH > $LOG_FILE 2>&1 &"
-sudo -u ec2-user bash -c "$COMMAND_TO_RUN"
+sudo -u ec2-user nohup \
+    env \
+    PYTHONPATH="$APP_DIR" \
+    FINNHUB_API_KEY="${finnhub_api_key}" \
+    KINESIS_STREAM_NAME_QUOTES="${kinesis_stream_name_quotes}" \
+    KINESIS_STREAM_NAME_NEWS="${kinesis_stream_name_news}" \
+    AWS_DEFAULT_REGION="${aws_region}" \
+    python3 "$PRODUCER_SCRIPT_PATH" > "$LOG_FILE" 2>&1 &
 
 echo "INFO: User data script execution finished."
