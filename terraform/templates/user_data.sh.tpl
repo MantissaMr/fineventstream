@@ -35,8 +35,9 @@ echo "INFO: Environment variables configured"
 
 # Launch the specified producer script in the background using nohup
 PRODUCER_SCRIPT_PATH="src/producer/${script_to_run}"
-echo "INFO: Launching producer: ${script_to_run}"
-COMMAND_TO_RUN="export PYTHONPATH=\$PYTHONPATH:$APP_DIR; export FINNHUB_API_KEY='${finnhub_api_key}'; nohup python3 $PRODUCER_SCRIPT_PATH > /dev/null 2>&1 &"
+LOG_FILE="/home/ec2-user/app/producer.log"
+echo "INFO: Launching producer: ${script_to_run}. Log file will be at: $LOG_FILE"
+COMMAND_TO_RUN="export PYTHONPATH=\$PYTHONPATH:$APP_DIR; export FINNHUB_API_KEY='${finnhub_api_key}'; nohup python3 $PRODUCER_SCRIPT_PATH > $LOG_FILE 2>&1 &"
 sudo -u ec2-user bash -c "$COMMAND_TO_RUN"
 
 echo "INFO: User data script execution finished."
