@@ -92,7 +92,6 @@ resource "aws_iam_instance_profile" "ec2_producer_instance_profile" {
 
 
 # --- IAM Role for Lambda Functions (Consumers)  ---
-# We'll add more specific policies for Kinesis read and S3 writes in later phases of the project. 
 resource "aws_iam_role" "lambda_processor_role" {
   name = "${var.project_name}-lambda-processor-role"
 
@@ -114,11 +113,72 @@ resource "aws_iam_role" "lambda_processor_role" {
   }
 }
 
-# Basic Lambda execution policy (allows writing to CloudWatch Logs)
-# AWS provides a managed policy for this: AWSLambdaBasicExecutionRole
+# --- Policies for Lambda Processor Role ---
+
+# 1. Basic Lambda execution policy (allows writing to CloudWatch Logs)
 resource "aws_iam_role_policy_attachment" "lambda_attach_basic_execution_policy" {
   role       = aws_iam_role.lambda_processor_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# 2. Policy to allow Lambda to read from Kinesis Data Streams
+resource "aws_iam_policy" "lambda_kinesis_read_policy" {
+  name        = "${var.project_name}-lambda-kinesis-read-policy"
+  description = "Allows Lambda to read from our Kinesis Data Streams"
+
+  policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "kinesis:GetRecords",
+          "kinesis:GetShardIterator",
+          "kinesis:DescribeStream",
+          "kinesis:ListStreams",
+          "kinesis:ListShards"
+        ],
+        Resource = [
+          aws_kinesis_stream.stock_quotes_stream.arn,
+          aws_kinesis_stream.company_news_stream.arn
+        ]
+      }
+    ]
+  })
+}
+
+# Attach the Kinesis read policy to the Lambda role
+resource "aws_iam_role_policy_attachment" "lambda_attach_kinesis_read" {
+  role       = aws_iam_role.lambda_processor_role.name
+  policy_arn = aws_iam_policy.lambda_kinesis_read_policy.arn
+}
+
+# 3. Policy to allow Lambda to write to the S3 Data Lake bucket
+resource "aws_iam_policy" "lambda_s3_write_policy" {
+  name        = "${var.project_name}-lambda-s3-write-policy"
+  description = "Allows Lambda to write processed data objects to the S3 data lake bucket"
+
+  policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "s3:PutObject"
+        ],
+        Resource = [
+          aws_s3_bucket.data_lake_bucket.arn,
+          "${aws_s3_bucket.data_lake_bucket.arn}/*" # Allow actions on objects inside the bucket
+        ]
+      }
+    ]
+  })
+}
+
+# Attach the S3 write policy to the Lambda role
+resource "aws_iam_role_policy_attachment" "lambda_attach_s3_write" {
+  role       = aws_iam_role.lambda_processor_role.name
+  policy_arn = aws_iam_policy.lambda_s3_write_policy.arn
 }
 
 
